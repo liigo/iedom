@@ -1,0 +1,4 @@
+LIBRARY  iedom
+
+EXPORTS
+	luaopen_iedom
