@@ -18,9 +18,13 @@ extern CComModule _Module;
 #include <assert.h>
 
 
-// 使用本库的的LUA代码，只能被C/C++代码加载并执行，且加载之前必须把一个table t存入全局表，
-// 命名为 "iedom$currentdoc"，并令 t[0] = IHTMLDocument* 。参见dom_currentdoc()。
-// TODO: 增加调用示例代码
+// Liigo 2013/9:
+// 使用本库的的LUA代码，只能被C/C++代码加载并执行，且加载之前必须把一个存有IHTMLDocument2*指针
+// 的lightuserdata值存入全局表，并命名为 "iedom$currentdoc"。另参见dom_currentdoc()。
+// 示例：lua_pushlightuserdata(L, IHTMLDocument2*); lua_setglobal(L, "iedom$currentdoc");
+// 要保证在lua代码中正确加载此C模块iedom，还需要事先（通过C/C++代码）设置package.cpath。
+// 比较完整的调用代码示例参见文档README.md。
+
 
 struct LuaFunc {
 	const char* name;
@@ -28,7 +32,7 @@ struct LuaFunc {
 };
 
 // create_lua_funcs_table() push a new created table on stack top, which contains all functions.
-// if tname is no NULL, will save the table to Registry, to be take back later by using get_lua_funcs_table(L,tname).
+// if tname is not NULL, will save the table to Registry, to be taken back later by using get_lua_funcs_table(L,tname).
 // it is recommended to use a prefix for tname to avoid name confusion with other names in global Registry.
 // by liigo, 20130906.
 static void create_lua_funcs_table(lua_State* L, LuaFunc* funcs, const char* tname) {
@@ -73,6 +77,43 @@ static void report_lua_error(lua_State* L, const char* errmsg) {
 	lua_error(L);
 }
 
+// Release() the COM object at self[0]
+// arg: the object to be gc
+static int dom__gc(lua_State* L) {
+	if(lua_type(L, -1) == LUA_TTABLE) {
+		lua_rawgeti(L, -1, 0);
+		if(lua_type(L, -1) != LUA_TNIL) {
+			IUnknown* pIUnknown = (IUnknown*) lua_touserdata(L, -1);
+			pIUnknown->Release();
+			lua_pushnil(L);
+			lua_rawseti(L, -3, 0);
+		}
+		lua_pop(L, 1);
+	}
+	return 0;
+}
+
+static int dom__newindex(lua_State* L) {
+	report_lua_error(L, "[iedom] unsupported setfield operation");
+	return 0;
+}
+
+// create a metatable for dom objects, and set it as metatable of the object on stack top
+// keep stack unchanged
+static void set_dom_metatable(lua_State* L) {
+	static LuaFunc dom_metatable_funcs[] = {
+		{ "__gc", dom__gc },
+		{ "__newindex", dom__newindex },
+		{ NULL, NULL },
+	};
+	get_lua_funcs_table(L, "iedom$dom$metatable");
+	if(lua_isnil(L, -1)) {
+		lua_pop(L, 1);
+		create_lua_funcs_table(L, dom_metatable_funcs, "iedom$dom$metatable");
+	}
+	lua_setmetatable(L, -2);
+}
+
 // arg: doc, ...
 // return IHTMLDocument2*
 static IHTMLDocument2* getdoc(lua_State* L) {
@@ -84,15 +125,6 @@ static IHTMLDocument2* getdoc(lua_State* L) {
 	if(pDoc == NULL)
 		report_lua_error(L, "invalid doc value");
 	return pDoc;
-}
-
-// no arg, return current document
-static int dom_currentdoc(lua_State* L) {
-	lua_getglobal(L, "iedom$currentdoc");
-	if(lua_isnil(L, -1)) {
-		report_lua_error(L, "[iedom] No current document value available.");
-	}
-	return 1;
 }
 
 // arg: collection, ...
@@ -381,7 +413,8 @@ static void new_element(lua_State* L, IHTMLElement* element) {
 	};
 	create_lua_funcs_table(L, element_funcs, NULL);
 	lua_pushlightuserdata(L, element);
-	lua_rawseti(L, -2, 0);
+	lua_rawseti(L, -2, 0); // element[0] = IHTMLElement*
+	set_dom_metatable(L);
 }
 
 static int collection_len(lua_State* L) {
@@ -405,6 +438,7 @@ static void new_collection(lua_State* L, IHTMLElementCollection* collection) {
 	create_lua_funcs_table(L, collection_funcs, NULL);
 	lua_pushlightuserdata(L, collection);
 	lua_rawseti(L, -2, 0); // collection[0] = IHTMLElementCollection*
+	set_dom_metatable(L);
 }
 
 // arg: collection (self), name (int or string), index (int,optional)
@@ -465,7 +499,8 @@ static int collection_item(lua_State* L) {
 	return 1;
 }
 
-// arg: doc (self), 
+// arg: doc (self)
+// return collection
 static int doc_all(lua_State* L) {
 	IHTMLDocument2* doc = getdoc(L);
 	IHTMLElementCollection* collection = NULL;
@@ -498,6 +533,31 @@ static int doc_url(lua_State* L) {
 	return 1;
 }
 
+// no arg, return current document
+static int dom_currentdoc(lua_State* L) {
+	static LuaFunc doc_funcs[] = {
+		{ "all", doc_all },
+		{ "url", doc_url },
+		{ NULL, NULL },
+	};
+
+	lua_getglobal(L, "iedom$currentdoc"); // set by C/C++ caller
+	if(lua_istable(L, -1)) {
+		return 1;
+	} else if(lua_islightuserdata(L, -1)) {
+		create_lua_funcs_table(L, doc_funcs, NULL);
+		set_dom_metatable(L);
+		lua_insert(L, -2); // move table down to lightuserdata
+		lua_rawseti(L, -2, 0);
+		lua_pushvalue(L, -1); // double stack top (two table)
+		lua_setglobal(L, "iedom$currentdoc"); // reset the global var to table value
+		return 1;
+	} else {
+		report_lua_error(L, "[iedom] No current document value available.");
+	}
+	return 1;
+}
+
 int luaopen_iedom(lua_State* L) {
 	LuaFunc dom_funcs[] = {
 		//{ "currentdoc", dom_currentdoc },
@@ -505,14 +565,7 @@ int luaopen_iedom(lua_State* L) {
 	};
 	create_lua_funcs_table(L, dom_funcs, NULL); // dom to be return
 
-	LuaFunc doc_funcs[] = {
-		{ "all", doc_all },
-		{ "url", doc_url },
-		{ NULL, NULL },
-	};
 	dom_currentdoc(L);
-	add_table_funcs(L, doc_funcs);
-
-	lua_setfield(L, -2, "currentdoc"); // dom.currentdoc = current documnet
+	lua_setfield(L, -2, "currentdoc"); // dom.currentdoc = current document
 	return 1;
 }
