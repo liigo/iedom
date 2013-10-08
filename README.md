@@ -65,6 +65,99 @@ iedom，用于操作IE网页DOM的LUA之C模块。
 		end
 	end
 
-###五、License
+###五、在C/C++中调用
+
+使用本库的的LUA代码，只能被C/C++代码加载并执行，且加载之前必须把一个存有IHTMLDocument2*指针的lightuserdata值存入全局表，并命名为 "iedom$currentdoc"。另参见dom_currentdoc()。
+
+要保证在lua代码中正确加载此C模块iedom，还需要事先（通过C/C++代码）设置package.cpath。
+
+比较完整的调用代码示例如下：
+
+	static void InvokeLua_ondoc(IHTMLDocument2* pDoc)
+	{
+		char luafile[MAX_PATH + 1], luacpath[MAX_PATH + 1];
+		if(getDllPathFile(luafile, MAX_PATH, "ondoc.lua") && getDllPathFile(luacpath, MAX_PATH, "?.dll"))
+		{
+			//create new lua state
+			lua_State* L = lua_newstate(luaAlloc, NULL);
+			luaL_openlibs(L);
+
+			//update package.cpath to ensure 'require' can find iedom.dll at right place
+			lua_getglobal(L, "package");
+			lua_pushstring(L, luacpath);
+			lua_setfield(L, -2, "cpath");
+			lua_pop(L, 1);
+
+			//pass pointer IHTMLDocument2* pDoc into c module, through a named global var
+			pDoc->AddRef();
+			lua_pushlightuserdata(L, pDoc);
+			lua_setglobal(L, "iedom$currentdoc");
+
+			//a global msgbox() function only for test/debug
+			lua_register(L, "msgbox", msgbox);
+
+			//execute the lua file
+			int r = luaL_dofile(L, luafile);
+			if(r == 0) {
+				//success
+			} else {
+				//error
+	#ifdef _DEBUG
+				const char* errmsg = lua_tostring(L, -1);
+				printf("luaL_dofile() error: %s\n", errmsg);
+				MessageBoxA(0, errmsg, "ondoc.lua error:", MB_OK|MB_ICONERROR);
+	#endif
+			}
+			lua_close(L);
+		} else {
+			// fails to get the path of .lua
+			// log error
+		}
+	}
+
+	//return the full path of the file in this dll directory: DllDir\file
+	static bool getDllPathFile(char* buffer, unsigned int buflen, const char* file)
+	{
+		HMODULE hThisDllModule = GetModuleHandleA("auditsink.dll");
+		//if(GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, getDllPathFile, &hThisDllModule))
+		if(hThisDllModule)
+		{
+			DWORD r = GetModuleFileNameA(hThisDllModule, buffer, buflen);
+			if(r == 0 || r == buflen) return false;
+			char* slash = strrchr(buffer, '\\');
+			if(slash == NULL) return false;
+			*(slash + 1) = '\0';
+			if(file) {
+				int n = strlen(file);
+				if((slash + n + 1 >= buffer + buflen)) return false; // file\0
+				memcpy(slash + 1, file, n + 1);
+			}
+			return true;
+		} else {
+			return false;
+		}
+	}
+
+	static void* luaAlloc(void* ud, void* ptr, unsigned int osize, unsigned int nsize)
+	{
+		if(nsize == 0) {
+			free(ptr);
+			return NULL;
+		}
+		return realloc(ptr, nsize);
+	}
+
+	static int msgbox(lua_State* L)
+	{
+		const char* msg = lua_tostring(L, 1);
+		MessageBoxA(0, msg, "Message", MB_OK);
+		return 0;
+	}
+
+注1：因为本库仅仅是对COM对象 IHTMLDocument2* 及其相关接口的操作封装，而这些COM对象指针往往仅存在于C/C++程序中，所以限制本库只能被C/C++调用并无不妥。
+
+注2：在本库内部实现中，借助table对象的 \__gc 元方法做到了在Lua对象document/element/collecton被回收时调用相应COM对象的Release()方法。这意味着：1、IHTMLDocument2*传入本库前必须先AddRef()；2、本库必须在Lua 5.2或更高版本环境下执行，否则，因为Lua 5.1及以下版本中table没有\__gc元方法将导致COM对象无法正常释放。
+
+###六、License
 Opensource under the [MIT license](http://opensource.org/licenses/MIT).
 Copyright (C) 2013 Liigo Zhuang.
