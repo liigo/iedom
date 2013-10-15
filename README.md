@@ -5,7 +5,7 @@ iedom，用于操作IE网页DOM的LUA之C模块。
 ###〇、基本概念
 
 	Document：文档，对应一个HTML网页（或内嵌网页），是对COM接口IHTMLDocument2的封装。
-	Collection：成员集合，用于容纳哦多个成员（Element），是对COM接口IHTMLElementCollection的封装。
+	Collection：成员集合，用于容纳多个成员（Element），是对COM接口IHTMLElementCollection的封装。
 	Element：成员，对应HTML文本内的一个标签（Tag），是对COM接口IHTMLElement或其子接口的封装。
 
 这些概念与微软网页DOM中的概念是一一对应的。更多更详细资料请参考MSDN：
